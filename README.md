@@ -4,22 +4,19 @@
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-000000.svg)](https://antigravity.google/docs/cli/statusline)
 
-**Google Antigravity CLI (`agy`) 零虚标实时上下文与性能监控状态栏** —— 参考并基于 [zzusec/agy-statusline](https://github.com/zzusec/agy-statusline) 改造，保留服务端真实压缩阈值解码与增量压缩追踪，并新增 **Git 分支展示、实时 TPS（Tokens/s）监控、窄屏多级自适应折行**，纯 Python 标准库零依赖实现。
+**Google Antigravity CLI (`agy`) 实时上下文与性能监控状态栏** —— 直接从本地会话 SQLite 库解码服务端下发的真实压缩阈值（`CheckpointConfig.max_context_tokens`），支持后台自动压缩追踪、Git 分支展示、实时生成速度（TPS）统计与窄屏多级自适应折行，纯 Python 标准库零依赖实现。
 
 ---
 
-## 核心特性与改进 (Features)
+## 核心特性 (Features)
 
-继承自原版 `agy-statusline` 的核心能力：
-- **100% 服务端真实上下文分母**：以 SQLite 只读模式（`?mode=ro`）直接解码 `~/.gemini/antigravity-cli/conversations/<conversation_id>.db` 中服务端每轮下发的 `CheckpointConfig.max_context_tokens`（`gen_metadata` `f1.f9.f10.f4` 与 `executor_metadata` `f10.f2.f5`），取 `min(物理窗口, 服务端上限)`，避免 `1.0M` 物理上限造成的百分比虚标；新会话未首轮落库前自动继承最近会话的服务端上限。
-- **静默自动压缩次数与峰值追踪**：通过 `(inode, offset)` 字节游标增量扫描 `transcript.jsonl`，发生过 `CHECKPOINT` 自动压缩时常驻显示 `压缩×N(峰XXXK)`；支持 `/resume` 恢复会话后回溯上一轮上下文与累计输出。
-- **缓存命中、输出、费用与红线预警**：展示 Prompt 缓存命中率（`>= 50%` 绿色高亮）、累计输出 token、会话费用（`cost.total_usd`），当上下文占用 `>= 85%` 时触发红色预警 `即将触发压缩`。
-- **零外部依赖、叠加不覆盖原生状态栏**：仅依赖 Python 3 标准库，默认开启 `"stack_with_default": true`，在 `agy` 原生状态栏下方追加展示。
-
-相比原版新增的改进（`statushow.py`）：
-- **Git 当前分支展示**：优先读取 payload 中的 `worktree.branch` / `git_branch`，兜底从工作目录向上查找 `.git/HEAD`（兼容 worktree / submodule 的 `.git` 文件），无需拉起 `git` 子进程，超长分支名自动截断至 28 字符。
+- **服务端真实上下文阈值解码**：以 SQLite 只读模式（`?mode=ro`）读取 `~/.gemini/antigravity-cli/conversations/<conversation_id>.db` 中服务端下发的 `CheckpointConfig.max_context_tokens`（`gen_metadata` `f1.f9.f10.f4` 与 `executor_metadata` `f10.f2.f5`），取 `min(物理窗口, 服务端上限)` 计算真实占比，避免虚标；新会话首轮落库前自动继承最近会话的服务端上限。
+- **静默自动压缩与峰值追踪**：通过 `(inode, offset)` 字节游标增量扫描 `transcript.jsonl`，发生过 `CHECKPOINT` 自动压缩时常驻显示 `压缩×N(峰XXXK)`；支持 `/resume` 恢复会话后回溯上一轮上下文与累计输出。
+- **Git 当前分支展示**：优先读取 payload 中的 `worktree.branch` / `git_branch`，兜底沿工作目录向上查找 `.git/HEAD`（兼容 worktree / submodule 的 `.git` 文件），无需拉起 `git` 子进程，超长分支名自动截断至 28 字符。
 - **实时生成速度（TPS）监控**：增量扫描本地会话库 `steps` 表中已完成的 `PLANNER_RESPONSE`（`step_type = 15, status = 3`），解析 Protobuf 起止时间戳与输出 token 数，展示最新一轮 TPS（`>= 60` 绿、`>= 25` 青、`< 25` 黄）；累计 `>= 2` 轮且非紧凑模式时同时显示会话均值 `TPS XX.X(均XX.X)`。
+- **缓存命中、输出、费用与红线预警**：展示 Prompt 缓存命中率（`>= 50%` 绿色高亮）、累计输出 token、会话费用（`cost.total_usd`），当上下文占用 `>= 85%` 时触发红色预警 `即将触发压缩`。
 - **宽字符感知的多级自适应排版**：精确计算含中文在内的终端显示宽度，依据 `terminal_width` 自动在“完整信息 → 紧凑模式 → 隐藏模型名 → 隐藏输出/费用”四级间降级，并支持最多两行平滑折行。
+- **零外部依赖、叠加不覆盖原生状态栏**：仅依赖 Python 3 标准库，默认开启 `"stack_with_default": true`，在 `agy` 原生状态栏下方追加展示。
 
 ---
 
@@ -129,7 +126,6 @@ chmod +x install.sh uninstall.sh
 
 ---
 
-## 致谢与许可 (Credits & License)
+## License
 
-- 参考项目：[zzusec/agy-statusline](https://github.com/zzusec/agy-statusline)
-- 开源协议：[MIT License](LICENSE)
+[MIT License](LICENSE)
