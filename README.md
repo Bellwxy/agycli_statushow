@@ -79,6 +79,12 @@ agy（stdin 下发 JSON payload）
 
 ## 快速安装 (Quick Start)
 
+> 🤖 也可以不克隆仓库，直接把下面这条命令发给你的 AI Agent（Claude Code / Codex / Gemini CLI 等）或终端执行，一句话完成安装：
+>
+> ```bash
+> git clone https://github.com/Bellwxy/agycli_statushow.git && python agycli_statushow/statushow.py --install
+> ```
+
 ### Windows (PowerShell)
 
 克隆本仓库后在项目目录运行：
