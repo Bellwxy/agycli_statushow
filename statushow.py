@@ -13,6 +13,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -60,6 +61,13 @@ def _pack_lines(parts, sep, max_w):
 
 
 def _render_adaptive(tiers, sep, max_w):
+    # 优先单行显示各降级档位，避免 TPS 等尾部字段被挤到第二行
+    for parts in tiers:
+        if not parts:
+            continue
+        lines, fits = _pack_lines(parts, sep, max_w)
+        if fits and len(lines) == 1:
+            return lines
     for parts in tiers:
         if not parts:
             continue
@@ -346,21 +354,55 @@ def _update_tps_from_conn(conn, entry):
     }
 
 
-def resolve_db_metrics(conv_id, t_path, cache):
-    """Resolves server compaction limit and incremental TPS stats for the active conversation."""
-    base_dir = os.path.expanduser("~/.gemini/antigravity-cli")
+def _resolve_app_dirs(conv_id, t_path):
+    """解析候选数据根目录与会话 ID，兼容 agy 传入 .gemini/antigravity 路径的情况。"""
+    candidates = []
     if t_path:
         expanded = os.path.expanduser(t_path).replace("\\", "/")
         marker = "/brain/"
         pos = expanded.find(marker)
         if pos > 0:
-            base_dir = expanded[:pos]
+            t_base = expanded[:pos]
             if not conv_id:
-                rest = expanded[pos + len(marker) :]
-                conv_id = rest.split("/")[0]
+                conv_id = expanded[pos + len(marker) :].split("/")[0]
+            if t_base.rstrip("/").endswith("/antigravity"):
+                candidates.append(t_base.rstrip("/") + "-cli")
+            candidates.append(t_base)
 
-    conv_dir = os.path.join(base_dir, "conversations")
-    db_path = os.path.join(conv_dir, "{}.db".format(conv_id)) if conv_id else ""
+    candidates.append(os.path.expanduser("~/.gemini/antigravity-cli"))
+    candidates.append(os.path.expanduser("~/.gemini/antigravity"))
+
+    seen = set()
+    uniq = []
+    for c in candidates:
+        nc = os.path.normpath(os.path.abspath(c))
+        key = os.path.normcase(nc)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(nc)
+    return conv_id, uniq
+
+
+def resolve_db_metrics(conv_id, t_path, cache):
+    """Resolves server compaction limit and incremental TPS stats for the active conversation."""
+    conv_id, base_dirs = _resolve_app_dirs(conv_id, t_path)
+    conv_dir = ""
+    db_path = ""
+    if conv_id:
+        for bd in base_dirs:
+            cand_dir = os.path.join(bd, "conversations")
+            cand_db = os.path.join(cand_dir, "{}.db".format(conv_id))
+            if os.path.isfile(cand_db):
+                conv_dir = cand_dir
+                db_path = os.path.normpath(cand_db)
+                break
+    if not conv_dir:
+        for bd in base_dirs:
+            cand_dir = os.path.join(bd, "conversations")
+            if os.path.isdir(cand_dir):
+                conv_dir = cand_dir
+                break
+
     tps_stats = None
 
     if db_path and os.path.isfile(db_path):
@@ -461,13 +503,23 @@ def save_cache(cache_file, cache):
         pass
 
 
-def scan_transcript_incremental(t_path, cache):
+def scan_transcript_incremental(t_path, cache, conv_id=""):
     """Incrementally scans transcript.jsonl for checkpoints, peak context, and last turn."""
-    if not t_path:
+    conv_id, base_dirs = _resolve_app_dirs(conv_id, t_path)
+    resolved_t = ""
+    if t_path:
+        exp_t = os.path.normpath(os.path.expanduser(t_path))
+        if os.path.isfile(exp_t):
+            resolved_t = exp_t
+    if not resolved_t and conv_id:
+        for bd in base_dirs:
+            cand_t = os.path.join(bd, "brain", conv_id, ".system_generated", "logs", "transcript.jsonl")
+            if os.path.isfile(cand_t):
+                resolved_t = os.path.normpath(cand_t)
+                break
+    if not resolved_t:
         return None
-    t_path = os.path.expanduser(t_path)
-    if not os.path.isfile(t_path):
-        return None
+    t_path = resolved_t
 
     try:
         st = os.stat(t_path)
@@ -594,7 +646,7 @@ def main():
     conv_id = data.get("conversation_id") or data.get("session_id") or ""
     t_path = data.get("transcript_path") or ""
 
-    t_stats = scan_transcript_incremental(t_path, cache)
+    t_stats = scan_transcript_incremental(t_path, cache, conv_id)
     ckpts = int(t_stats["ckpts"]) if t_stats else 0
     peak_ctx = int(t_stats["peak_ctx"]) if t_stats else 0
 
@@ -658,11 +710,11 @@ def main():
 
         if active_ctx > 0 or has_turn:
             tok_lbl = "{}/{}".format(fmt_tok(active_ctx), fmt_tok(effective_limit))
-            segs.append("{dim}上下文{r} {pc}{b}{pct:.1f}%{r} {dim}({tok}){r}".format(
+            segs.append("{dim}context{r} {pc}{b}{pct:.1f}%{r} {dim}({tok}){r}".format(
                 dim=DIM, r=R, pc=pct_color, b=B, pct=real_pct, tok=tok_lbl
             ))
         else:
-            segs.append("{dim}上下文{r} {b}0.0%{r} {dim}(上限 {lim}){r}".format(
+            segs.append("{dim}context{r} {b}0.0%{r} {dim}(上限 {lim}){r}".format(
                 dim=DIM, r=R, b=B, lim=fmt_tok(effective_limit)
             ))
 
@@ -730,7 +782,52 @@ def main():
     sys.stdout.write("\n".join(lines) + "\n")
 
 
+def install_plugin():
+    """将插件安装到 ~/.gemini/antigravity-cli 并自动写入启用配置。"""
+    base_dir = os.path.abspath(os.path.expanduser("~/.gemini/antigravity-cli"))
+    os.makedirs(base_dir, exist_ok=True)
+
+    target_script = os.path.abspath(os.path.join(base_dir, "statushow.py"))
+    src_script = os.path.abspath(__file__)
+    if os.path.normcase(src_script) != os.path.normcase(target_script):
+        shutil.copy2(src_script, target_script)
+
+    settings_path = os.path.join(base_dir, "settings.json")
+    cfg = {}
+    if os.path.isfile(settings_path):
+        bak_path = os.path.join(base_dir, "settings.json.bak_statusline")
+        if not os.path.exists(bak_path):
+            shutil.copy2(settings_path, bak_path)
+        with open(settings_path, "r", encoding="utf-8") as sf:
+            loaded = json.load(sf)
+        if not isinstance(loaded, dict):
+            raise ValueError("settings.json 根节点必须为 JSON 对象")
+        cfg = loaded
+
+    cmd_target = '"{}"'.format(target_script) if " " in target_script else target_script
+    sl = cfg.get("statusLine")
+    if not isinstance(sl, dict):
+        sl = {}
+    sl["type"] = "command"
+    sl["command"] = "python {}".format(cmd_target)
+    sl["enabled"] = True
+    sl.setdefault("stack_with_default", True)
+    cfg["statusLine"] = sl
+
+    tmp_path = "{}.tmp.{}".format(settings_path, os.getpid())
+    with open(tmp_path, "w", encoding="utf-8") as sf:
+        json.dump(cfg, sf, indent=2, ensure_ascii=False)
+        sf.write("\n")
+    os.replace(tmp_path, settings_path)
+
+    print("已安装插件脚本: {}".format(target_script))
+    print("已启用状态栏配置: {}".format(settings_path))
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and "--install" in sys.argv[1:]:
+        sys.exit(install_plugin())
     try:
         main()
     except Exception:
